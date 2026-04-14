@@ -2,7 +2,6 @@
 # llm.py is intentionally gitignored so your API key is never committed.
 
 import json
-import queue as queue_module
 import threading
 
 import requests

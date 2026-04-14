@@ -60,7 +60,7 @@ HTML_FOOTER_TEMPLATE = """\
     <p><small>
         Also available: ssh ch.at &bull; curl ch.at/?q=hello &bull; dig @ch.at "question" TXT<br>
         No logs &bull; No accounts &bull; Free software &bull;
-        <a href="https://github.com/edujbarrios/ch.at-py">GitHub</a>
+        <a href="https://github.com/edujbarrios/ch.at-for-python">GitHub</a>
     </small></p>
 </body>
 </html>"""
@@ -201,7 +201,11 @@ def create_app() -> Flask:
             if wants_stream:
                 def gen_sse():
                     for chunk in _stream_llm(prompt):
-                        yield f"data: {chunk}\n\n"
+                        # Each SSE "data:" field must be a single line;
+                        # split multi-line chunks into separate data fields.
+                        for line in chunk.split("\n"):
+                            yield f"data: {line}\n"
+                        yield "\n"
                     yield "data: [DONE]\n\n"
 
                 return Response(

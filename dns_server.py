@@ -56,15 +56,6 @@ def _parse_name(data: bytes, offset: int) -> tuple[str, int]:
     return ".".join(labels), offset
 
 
-def _encode_name(name: str) -> bytes:
-    parts = name.rstrip(".").split(".")
-    out = b""
-    for p in parts:
-        encoded = p.encode("ascii")
-        out += bytes([len(encoded)]) + encoded
-    return out + b"\x00"
-
-
 def _build_txt_response(request_data: bytes, txt_strings: list[str]) -> bytes:
     """Build a minimal DNS TXT response matching the question section."""
     if len(request_data) < 12:
@@ -189,11 +180,24 @@ def _handle_dns(data: bytes, addr, sock: socket.socket) -> None:
     if len(response_text) > 500:
         response_text = response_text[:497] + "..."
 
-    # Split into ≤255-byte chunks for DNS TXT records
+    # Split into ≤255-byte chunks for DNS TXT records.
+    # Slice on character boundaries, not byte boundaries, to avoid
+    # splitting multi-byte UTF-8 sequences.
     txt_chunks: list[str] = []
-    enc = response_text.encode("utf-8")
-    for i in range(0, len(enc), 255):
-        txt_chunks.append(enc[i: i + 255].decode("utf-8", errors="ignore"))
+    chars = list(response_text)
+    i = 0
+    while i < len(chars):
+        chunk_chars: list[str] = []
+        byte_count = 0
+        while i < len(chars):
+            c_bytes = len(chars[i].encode("utf-8"))
+            if byte_count + c_bytes > 255:
+                break
+            chunk_chars.append(chars[i])
+            byte_count += c_bytes
+            i += 1
+        if chunk_chars:
+            txt_chunks.append("".join(chunk_chars))
 
     response = _build_txt_response(data, txt_chunks)
     try:
