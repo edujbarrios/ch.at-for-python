@@ -28,7 +28,7 @@ MODEL_NAME = "gpt-3.5-turbo"  # or gpt-4o, gpt-4, etc.
 # MODEL_NAME = "llama3"                        # or phi3, mistral, etc.
 
 
-def llm(input, queue=None, stop_event=None):
+def llm(input, queue=None, stop_event=None, image_b64=None, image_mime="image/jpeg"):
     """Call the language model.
 
     Args:
@@ -36,6 +36,10 @@ def llm(input, queue=None, stop_event=None):
         queue:      queue.Queue — if provided, stream response chunks into it.
                     A ``None`` sentinel is placed when the stream ends.
         stop_event: threading.Event — when set, streaming stops early.
+        image_b64:  Optional base64-encoded image. When provided the request is
+                    sent as a multimodal (vision) message. The model must support
+                    vision; if it does not, the API error is surfaced normally.
+        image_mime: MIME type of the image (default: "image/jpeg").
 
     Returns:
         (response_str, None)  on success  when queue is None.
@@ -43,9 +47,26 @@ def llm(input, queue=None, stop_event=None):
     """
     # Build messages array
     if isinstance(input, str):
-        messages = [{"role": "user", "content": input}]
+        if image_b64:
+            messages = [{"role": "user", "content": [
+                {"type": "text", "text": input},
+                {"type": "image_url", "image_url": {"url": f"data:{image_mime};base64,{image_b64}"}},
+            ]}]
+        else:
+            messages = [{"role": "user", "content": input}]
     elif isinstance(input, list):
-        messages = input
+        if image_b64:
+            # Attach the image to the last user message in the history.
+            messages = [dict(m) for m in input]
+            for i in reversed(range(len(messages))):
+                if messages[i].get("role") == "user" and isinstance(messages[i].get("content"), str):
+                    messages[i]["content"] = [
+                        {"type": "text", "text": messages[i]["content"]},
+                        {"type": "image_url", "image_url": {"url": f"data:{image_mime};base64,{image_b64}"}},
+                    ]
+                    break
+        else:
+            messages = input
     else:
         if queue is not None:
             queue.put(None)
