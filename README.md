@@ -67,6 +67,71 @@ selftest/        # integration tests
 pyproject.toml   # package definition
 ```
 
+## Usage examples
+
+### Browser
+Open `http://localhost:8080` — no JavaScript required. Type a question and get a streamed response. History is kept client-side in a hidden form field.
+
+### curl — streaming
+```bash
+# Stream a response (smooth output, no buffering)
+curl -N "localhost:8080/?q=what+is+python"
+
+# Path-based query (hyphens become spaces)
+curl -N localhost:8080/explain-async-await-in-python
+
+# POST raw body
+curl -N -X POST localhost:8080 -d "what is the GIL?"
+```
+
+### curl — JSON response
+```bash
+curl -H "Accept: application/json" "localhost:8080/?q=hello"
+# {"question": "hello", "answer": "..."}
+```
+
+### SSE (Server-Sent Events)
+```bash
+curl -N -H "Accept: text/event-stream" "localhost:8080/?q=hello"
+# data: Hello
+# data:  there
+# data: [DONE]
+```
+
+### OpenAI-compatible API
+Drop-in replacement for any OpenAI client:
+```bash
+curl localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4","messages":[{"role":"user","content":"What is RAG?"}]}'
+```
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="none")
+response = client.chat.completions.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "What is RAG?"}],
+)
+print(response.choices[0].message.content)
+```
+
+### SSH
+```bash
+ssh localhost -p 2222
+# Welcome to ch.at
+# Type your message and press Enter.
+# Exit: type 'exit', Ctrl+C, or Ctrl+D
+# > What is a transformer?
+```
+
+### DNS TXT
+```bash
+dig @localhost "what-is-2+2" TXT
+dig @localhost "explain-python-gil" TXT
+```
+
 ## Testing
 
 ```bash
