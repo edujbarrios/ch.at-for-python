@@ -1,0 +1,30 @@
+# LLM config (contains API keys — never commit)
+llm.py
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.Python
+
+# Virtual environments
+env/
+venv/
+.venv/
+
+# Environment files
+.env
+
+# TLS certificates
+cert.pem
+key.pem
+
+# Tests
+.pytest_cache/
+
+# Logs
+*.log
