@@ -28,10 +28,13 @@ DNS_AA_MASK    = 0x0400
 DNS_RCODE_MASK = 0x000F
 
 
-def _parse_name(data: bytes, offset: int) -> tuple[str, int]:
+def _parse_name(data: bytes, offset: int, _depth: int = 0) -> tuple[str, int]:
     """Decode a DNS name from *data* starting at *offset*.
     Returns (name_str, new_offset).
+    _depth guards against malformed packets with pointer loops.
     """
+    if _depth > 10:
+        return "", offset  # pointer loop or excessive compression — bail out
     labels: list[str] = []
     visited = set()
     while offset < len(data):
@@ -47,7 +50,7 @@ def _parse_name(data: bytes, offset: int) -> tuple[str, int]:
                 break
             ptr = ((length & 0x3F) << 8) | data[offset + 1]
             offset += 2
-            sub, _ = _parse_name(data, ptr)
+            sub, _ = _parse_name(data, ptr, _depth + 1)
             labels.append(sub)
             break
         offset += 1

@@ -273,6 +273,9 @@ def create_app() -> Flask:
         except Exception:
             return Response("Invalid JSON", status=400, headers=cors)
 
+        if req_data is None:
+            return Response("Invalid JSON", status=400, headers=cors)
+
         messages = [
             {"role": m["role"], "content": m["content"]}
             for m in req_data.get("messages", [])
