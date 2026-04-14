@@ -126,11 +126,53 @@ ssh localhost -p 2222
 # > What is a transformer?
 ```
 
-### DNS TXT
+### Images (vision models)
+
+Attach a base64-encoded image to any query. The model must support vision (e.g. `gpt-4o`, `claude-3-opus`, `llava`).
+
+**Browser** — a file picker is shown below the text input. Select an image and type your question.
+
+**curl — multipart form upload:**
 ```bash
-dig @localhost "what-is-2+2" TXT
-dig @localhost "explain-python-gil" TXT
+curl -N -X POST localhost:8080 \
+  -F "q=what is in this image?" \
+  -F "img=@/path/to/photo.jpg"
 ```
+
+**curl — pre-encoded base64:**
+```bash
+B64=$(base64 -w0 photo.jpg)
+curl -N -X POST localhost:8080 \
+  -F "q=describe this" \
+  -F "img_b64=$B64" \
+  -F "img_mime=image/jpeg"
+```
+
+**OpenAI-compatible API:**
+```bash
+curl localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"What is this?\"}],\"image_b64\":\"$(base64 -w0 photo.jpg)\",\"image_mime\":\"image/jpeg\"}"
+```
+
+```python
+import base64, requests
+
+with open("photo.jpg", "rb") as f:
+    img_b64 = base64.b64encode(f.read()).decode()
+
+response = requests.post("http://localhost:8080/v1/chat/completions", json={
+    "model": "gpt-4o",
+    "messages": [{"role": "user", "content": "Describe this image."}],
+    "image_b64": img_b64,
+    "image_mime": "image/jpeg",
+})
+print(response.json()["choices"][0]["message"]["content"])
+```
+
+> **Note:** If your configured model does not support vision, the API will return an error message rather than crashing.
+
+
 
 ## Testing
 

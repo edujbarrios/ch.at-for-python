@@ -7,6 +7,7 @@ Supports:
   POST /v1/chat/completions         OpenAI-compatible API
 """
 
+import base64
 import html as html_lib
 import json
 import queue
@@ -51,8 +52,9 @@ HTML_HEADER = """\
 
 HTML_FOOTER_TEMPLATE = """\
 </div>
-    <form method="POST" action="/">
+    <form method="POST" action="/" enctype="multipart/form-data">
         <input type="text" name="q" placeholder="Type your message..." autofocus>
+        <input type="file" name="img" accept="image/*" style="margin-top:0.4rem;font-size:0.85rem;">
         <input type="submit" value="Send">
         <textarea name="h" style="display:none">{history}</textarea>
     </form>
@@ -91,14 +93,15 @@ def _parse_history(history: str) -> list[tuple[str, str]]:
     return result
 
 
-def _stream_llm(input_data, stop_event: threading.Event | None = None):
+def _stream_llm(input_data, stop_event: threading.Event | None = None,
+                image_b64: str | None = None, image_mime: str = "image/jpeg"):
     """Run LLM in a background thread; yield text chunks as they arrive."""
     from llm import llm
 
     q: queue.Queue = queue.Queue()
     _stop = stop_event or threading.Event()
 
-    threading.Thread(target=llm, args=(input_data, q, _stop), daemon=True).start()
+    threading.Thread(target=llm, args=(input_data, q, _stop, image_b64, image_mime), daemon=True).start()
 
     try:
         while True:
@@ -143,6 +146,19 @@ def create_app() -> Flask:
             if not query and path_query:
                 query = path_query.replace("-", " ")
 
+        # --- Image extraction (multimodal) ---
+        image_b64: str | None = None
+        image_mime: str = "image/jpeg"
+        if request.method == "POST":
+            img_file = request.files.get("img")
+            if img_file and img_file.filename:
+                image_mime = img_file.content_type or "image/jpeg"
+                image_b64 = base64.b64encode(img_file.read()).decode("ascii")
+            elif request.form.get("img_b64"):
+                # Pre-encoded fallback for API / programmatic clients
+                image_b64 = request.form.get("img_b64")
+                image_mime = request.form.get("img_mime", "image/jpeg")
+
         accept = request.headers.get("Accept", "")
         ua = request.headers.get("User-Agent", "")
         ua_lower = ua.lower()
@@ -170,7 +186,8 @@ def create_app() -> Flask:
                         yield f'<div class="a">{a_text}</div>\n'
                     yield f'<div class="q">{html_lib.escape(query)}</div>\n<div class="a">'
                     parts: list[str] = []
-                    for chunk in _stream_llm(HTML_PROMPT_PREFIX + prompt):
+                    for chunk in _stream_llm(HTML_PROMPT_PREFIX + prompt,
+                                            image_b64=image_b64, image_mime=image_mime):
                         parts.append(chunk)
                         yield chunk
                     yield "</div>\n"
@@ -187,7 +204,7 @@ def create_app() -> Flask:
             if is_curl:
                 def gen_plain():
                     yield f"Q: {query}\nA: "
-                    for chunk in _stream_llm(prompt):
+                    for chunk in _stream_llm(prompt, image_b64=image_b64, image_mime=image_mime):
                         yield chunk
                     yield "\n"
 
@@ -200,7 +217,7 @@ def create_app() -> Flask:
             # SSE streaming
             if wants_stream:
                 def gen_sse():
-                    for chunk in _stream_llm(prompt):
+                    for chunk in _stream_llm(prompt, image_b64=image_b64, image_mime=image_mime):
                         # Each SSE "data:" field must be a single line;
                         # split multi-line chunks into separate data fields.
                         for line in chunk.split("\n"):
@@ -217,7 +234,7 @@ def create_app() -> Flask:
             # Non-streaming (JSON accept or generic client)
             from llm import llm
             p = (HTML_PROMPT_PREFIX + prompt) if wants_html else prompt
-            response, err = llm(p)
+            response, err = llm(p, image_b64=image_b64, image_mime=image_mime)
             if err:
                 body = json.dumps({"error": err})
                 return Response(body, status=500, content_type="application/json", headers=cors)
@@ -281,9 +298,13 @@ def create_app() -> Flask:
             for m in req_data.get("messages", [])
         ]
 
+        # Optional image for vision models
+        api_image_b64: str | None = req_data.get("image_b64")
+        api_image_mime: str = req_data.get("image_mime", "image/jpeg")
+
         if req_data.get("stream", False):
             def gen_stream():
-                for chunk in _stream_llm(messages):
+                for chunk in _stream_llm(messages, image_b64=api_image_b64, image_mime=api_image_mime):
                     payload = {
                         "id": f"chatcmpl-{int(time.time())}",
                         "object": "chat.completion.chunk",
@@ -301,7 +322,7 @@ def create_app() -> Flask:
             )
 
         from llm import llm
-        response, err = llm(messages)
+        response, err = llm(messages, image_b64=api_image_b64, image_mime=api_image_mime)
         if err:
             return Response(json.dumps({"error": err}), status=500, content_type="application/json", headers=cors)
 
