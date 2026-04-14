@@ -1,0 +1,124 @@
+# Configuration — copy this file to llm.py and fill in your credentials.
+# llm.py is intentionally gitignored so your API key is never committed.
+
+import json
+import queue as queue_module
+import threading
+
+import requests
+
+# ---------------------------------------------------------------------------
+# Option 1: OpenAI API (default)
+# ---------------------------------------------------------------------------
+API_KEY    = "YOUR_API_KEY_HERE"
+API_URL    = "https://api.openai.com/v1/chat/completions"
+MODEL_NAME = "gpt-3.5-turbo"  # or gpt-4o, gpt-4, etc.
+
+# ---------------------------------------------------------------------------
+# Option 2: Anthropic Claude (uncomment to use instead of OpenAI)
+# ---------------------------------------------------------------------------
+# API_KEY    = "YOUR_API_KEY_HERE"
+# API_URL    = "https://api.anthropic.com/v1/messages"
+# MODEL_NAME = "claude-3-haiku-20240307"  # or claude-3-opus-20240229, etc.
+
+# ---------------------------------------------------------------------------
+# Option 3: Local LLM via Ollama (uncomment to use)
+# ---------------------------------------------------------------------------
+# API_KEY    = ""                              # No key needed
+# API_URL    = "http://localhost:11434/v1/chat/completions"
+# MODEL_NAME = "llama3"                        # or phi3, mistral, etc.
+
+
+def llm(input, queue=None, stop_event=None):
+    """Call the language model.
+
+    Args:
+        input:      str (single user message) or list[dict] (full messages array).
+        queue:      queue.Queue — if provided, stream response chunks into it.
+                    A ``None`` sentinel is placed when the stream ends.
+        stop_event: threading.Event — when set, streaming stops early.
+
+    Returns:
+        (response_str, None)  on success  when queue is None.
+        ("",           error)  on failure  in either mode.
+    """
+    # Build messages array
+    if isinstance(input, str):
+        messages = [{"role": "user", "content": input}]
+    elif isinstance(input, list):
+        messages = input
+    else:
+        if queue is not None:
+            queue.put(None)
+        return "", "invalid input type"
+
+    body = {
+        "model": MODEL_NAME,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 500,
+    }
+    if queue is not None:
+        body["stream"] = True
+
+    headers = {"Content-Type": "application/json"}
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
+
+    try:
+        resp = requests.post(
+            API_URL,
+            json=body,
+            headers=headers,
+            stream=(queue is not None),
+            timeout=60,
+        )
+    except Exception as exc:
+        if queue is not None:
+            queue.put(None)
+        return "", str(exc)
+
+    if resp.status_code != 200:
+        err = f"API error (status {resp.status_code}): {resp.text[:200]}"
+        if queue is not None:
+            queue.put(None)
+        return "", err
+
+    # --- Streaming mode ---
+    if queue is not None:
+        try:
+            for raw_line in resp.iter_lines():
+                if stop_event and stop_event.is_set():
+                    break
+                if not raw_line:
+                    continue
+                line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:]
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                    choices = chunk.get("choices", [])
+                    if choices:
+                        content = choices[0].get("delta", {}).get("content", "")
+                        if content:
+                            queue.put(content)
+                except json.JSONDecodeError:
+                    pass
+        except Exception:
+            pass
+        finally:
+            queue.put(None)  # sentinel — always signals end
+        return "", None
+
+    # --- Non-streaming mode ---
+    try:
+        data = resp.json()
+        choices = data.get("choices", [])
+        if choices:
+            return choices[0].get("message", {}).get("content", ""), None
+        return "", "unexpected response format"
+    except Exception as exc:
+        return "", str(exc)
