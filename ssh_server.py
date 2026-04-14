@@ -192,9 +192,19 @@ def start_ssh_server(port: int) -> None:
     """Block forever serving SSH connections on *port*."""
     host_key = _generate_host_key()
 
-    server_sock = socket.socket(socket.AF_INET6 if _has_ipv6() else socket.AF_INET, socket.SOCK_STREAM)
+    if _has_ipv6():
+        server_sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        # Enable dual-stack so the same socket accepts IPv4 and IPv6.
+        # Without this, on systems where IPV6_V6ONLY defaults to 1,
+        # IPv4 connections would be silently refused.
+        server_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        bind_addr = "::"
+    else:
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        bind_addr = ""
+
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_sock.bind(("", port))
+    server_sock.bind((bind_addr, port))
     server_sock.listen(128)
 
     while True:
