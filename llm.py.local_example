@@ -1,0 +1,182 @@
+# Local model configuration — copy this file to llm.py to run inference
+# directly from a local HuggingFace-format directory (safetensors, GGUF via
+# transformers, etc.) without any external API or internet access.
+#
+# Requirements:
+#   pip install torch transformers accelerate safetensors
+#   (or: pip install ".[local]"  if you installed ch.at-py in editable mode)
+#
+# Your MODEL_PATH directory must contain at minimum:
+#   config.json, tokenizer_config.json, tokenizer.json (or vocab files),
+#   and one or more *.safetensors weight files.
+#
+# llm.py is intentionally gitignored so no credentials are ever committed.
+
+import threading
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+
+# ---------------------------------------------------------------------------
+# Configuration — set MODEL_PATH to the directory that holds your model files
+# ---------------------------------------------------------------------------
+MODEL_PATH = "/path/to/your-safetensors-model"
+
+# Maximum number of *new* tokens the model may generate per request.
+MAX_NEW_TOKENS = 512
+
+# Sampling temperature (0 = greedy / deterministic, 1 = creative).
+TEMPERATURE = 0.7
+
+# ---------------------------------------------------------------------------
+# Module-level model load — happens once at startup, shared across requests.
+# ---------------------------------------------------------------------------
+print(f"Loading model from {MODEL_PATH} …")
+_tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+_model = AutoModelForCausalLM.from_pretrained(
+    MODEL_PATH,
+    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+    device_map="auto",
+)
+_model.eval()
+print("Model loaded.")
+
+
+def _build_prompt(input, image_b64, image_mime):
+    """Return a list[dict] messages array from *input* (str or list[dict]).
+
+    Images are noted as text tags when the base model has no vision head,
+    so the conversation still makes sense without raising an error.
+    """
+    if isinstance(input, str):
+        content = input
+        if image_b64:
+            content = f"[Image attached — MIME type: {image_mime}]\n{content}"
+        return [{"role": "user", "content": content}]
+
+    if isinstance(input, list):
+        messages = [dict(m) for m in input]
+        if image_b64:
+            # Attach image note to the last user message.
+            for i in reversed(range(len(messages))):
+                if messages[i].get("role") == "user":
+                    text = messages[i].get("content", "")
+                    messages[i]["content"] = (
+                        f"[Image attached — MIME type: {image_mime}]\n{text}"
+                    )
+                    break
+        return messages
+
+    return None
+
+
+def _messages_to_text(messages):
+    """Convert messages list to a single prompt string.
+
+    Prefers tokenizer.apply_chat_template when available (respects the model's
+    native chat format); falls back to a plain Human/Assistant template.
+    """
+    if hasattr(_tokenizer, "apply_chat_template") and _tokenizer.chat_template:
+        try:
+            return _tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception:
+            pass  # fall through to manual formatting
+
+    # Simple fallback format.
+    parts = []
+    for m in messages:
+        role = m.get("role", "user").capitalize()
+        parts.append(f"{role}: {m.get('content', '')}")
+    parts.append("Assistant:")
+    return "\n".join(parts)
+
+
+def llm(input, queue=None, stop_event=None, image_b64=None, image_mime="image/jpeg"):
+    """Call the local language model.
+
+    Args:
+        input:      str (single user message) or list[dict] (full messages array).
+        queue:      queue.Queue — if provided, stream response chunks into it.
+                    A ``None`` sentinel is placed when the stream ends.
+        stop_event: threading.Event — when set, streaming stops early.
+        image_b64:  Optional base64-encoded image.  Passed as a text note
+                    because base-model inference has no vision head; swap in
+                    a vision model (e.g. LlavaForConditionalGeneration) to
+                    handle images natively.
+        image_mime: MIME type of the image (default: "image/jpeg").
+
+    Returns:
+        (response_str, None)  on success  when queue is None.
+        ("",           error)  on failure  in either mode.
+    """
+    messages = _build_prompt(input, image_b64, image_mime)
+    if messages is None:
+        if queue is not None:
+            queue.put(None)
+        return "", "invalid input type"
+
+    prompt = _messages_to_text(messages)
+
+    try:
+        inputs = _tokenizer(prompt, return_tensors="pt").to(_model.device)
+    except Exception as exc:
+        if queue is not None:
+            queue.put(None)
+        return "", f"tokenization error: {exc}"
+
+    gen_kwargs = dict(
+        **inputs,
+        max_new_tokens=MAX_NEW_TOKENS,
+        temperature=TEMPERATURE,
+        do_sample=(TEMPERATURE > 0),
+        pad_token_id=_tokenizer.eos_token_id,
+    )
+
+    # ------------------------------------------------------------------ #
+    # Streaming mode                                                       #
+    # ------------------------------------------------------------------ #
+    if queue is not None:
+        streamer = TextIteratorStreamer(
+            _tokenizer,
+            skip_prompt=True,
+            skip_special_tokens=True,
+        )
+        gen_kwargs["streamer"] = streamer
+
+        def _generate():
+            with torch.no_grad():
+                _model.generate(**gen_kwargs)
+
+        gen_thread = threading.Thread(target=_generate, daemon=True)
+        gen_thread.start()
+
+        try:
+            for token_text in streamer:
+                if stop_event and stop_event.is_set():
+                    break
+                if token_text:
+                    queue.put(token_text)
+        except Exception:
+            pass
+        finally:
+            queue.put(None)  # sentinel — always signals end of stream
+
+        gen_thread.join(timeout=0)  # detach; thread finishes on its own
+        return "", None
+
+    # ------------------------------------------------------------------ #
+    # Non-streaming mode                                                   #
+    # ------------------------------------------------------------------ #
+    try:
+        with torch.no_grad():
+            output_ids = _model.generate(**gen_kwargs)
+        # Slice off the input tokens so we return only the generated text.
+        new_ids = output_ids[0][inputs["input_ids"].shape[-1]:]
+        response = _tokenizer.decode(new_ids, skip_special_tokens=True)
+        return response.strip(), None
+    except Exception as exc:
+        return "", str(exc)

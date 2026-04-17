@@ -23,6 +23,12 @@ dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.0",
 ]
+local = [
+    "torch>=2.0",
+    "transformers>=4.40",
+    "accelerate>=0.27",
+    "safetensors>=0.4",
+]
 
 [project.scripts]
 chat = "chat:main"

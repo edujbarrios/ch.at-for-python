@@ -52,19 +52,41 @@ SSH_PORT   = 2222   # set to 0 to disable
 DNS_PORT   = 0      # needs port 53 / root privileges
 ```
 
-LLM providers are configured in `llm.py` (copied from `llm.py.example`). Supports OpenAI, Anthropic Claude, and any OpenAI-compatible endpoint (Ollama, llama.cpp, etc.).
+LLM providers are configured in `llm.py` (copied from one of the example files below):
+
+| Example file | Use case |
+|---|---|
+| `llm.py.example` | OpenAI, Anthropic, or any OpenAI-compatible HTTP endpoint (Ollama, llama.cpp, etc.) |
+| `llm.py.local_example` | Local safetensors model loaded directly via HuggingFace `transformers` — no external API or internet access needed |
+
+### Running a local safetensors model
+
+```bash
+# Install extra dependencies
+pip install ".[local]"   # or: pip install torch transformers accelerate safetensors
+
+# Use the local model template
+cp llm.py.local_example llm.py
+# Edit llm.py and set MODEL_PATH to your model directory
+# (needs config.json + tokenizer files + *.safetensors weights)
+
+python chat.py
+```
+
+All ch.at interfaces (browser, curl, SSH, DNS, OpenAI-compatible API) work identically — only `llm.py` changes.
 
 ## Project structure
 
 ```
-chat.py          # entry point and port configuration
-llm.py.example   # LLM provider config — copy to llm.py and add your key
-util.py          # per-IP token-bucket rate limiter
-http_server.py   # HTTP/HTTPS server (Flask)
-ssh_server.py    # SSH server (Paramiko)
-dns_server.py    # DNS TXT server (stdlib only)
-selftest/        # integration tests
-pyproject.toml   # package definition
+chat.py               # entry point and port configuration
+llm.py.example        # LLM config template for cloud APIs — copy to llm.py and add your key
+llm.py.local_example  # LLM config template for local safetensors models — copy to llm.py
+util.py               # per-IP token-bucket rate limiter
+http_server.py        # HTTP/HTTPS server (Flask)
+ssh_server.py         # SSH server (Paramiko)
+dns_server.py         # DNS TXT server (stdlib only)
+selftest/             # integration tests
+pyproject.toml        # package definition
 ```
 
 ## Usage examples
